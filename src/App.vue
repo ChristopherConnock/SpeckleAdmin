@@ -1,23 +1,38 @@
 <template>
-  <div id="app">
-    <md-app md-waterfall>
-      <md-app-drawer :md-active="showSidebar" class='super-bg md-primary nav-sidebar' md-persistent="mini">
-        <md-list>
-          <md-list-item @click='showSidebar=!showSidebar'>
-            <md-icon>{{ showSidebar ? "chevron_left" : "chevron_right"}}</md-icon>
-            <span class="md-list-item-text"></span>
-          </md-list-item>
-        </md-list>
-        <nav-drawer></nav-drawer>
-        <div class='md-caption credits'><a href='https://speckle.works' target="_blank"><img src='https://speckle.works/img/logos/logo-xs.png' width="19px"></a></div>
-      </md-app-drawer>
-      <md-app-content>
-        <keep-alive exclude='StreamDetailView'>
-          <router-view></router-view>
-        </keep-alive>
-      </md-app-content>
-    </md-app>
-  </div>
+  <v-app :dark='dark'>
+    <v-navigation-drawer floating app class='elevation-5' v-model='drawer'>
+      <v-hover>
+        <v-toolbar slot-scope="{ hover }" flat prominent :class='`elevation-${hover ? 20 : 0} ${dark ? "royal-bg" : "light-bg" }`' dark xxxstyle='position: absolute; bottom:0'>
+          <div class='text-uppercase caption ml-0'>
+            <a href='https://speckle.works' target="_blank" style="color:white; text-decoration: none;"><b>Speckle</b>,
+              <span class='font-weight-light caption'>the open source data platform for AEC.</span></a>
+          </div>
+        </v-toolbar>
+      </v-hover>
+      <nav-drawer></nav-drawer>
+    </v-navigation-drawer>
+    <v-toolbar app flat class=''>
+      <v-toolbar-side-icon @click.stop="drawer = !drawer"></v-toolbar-side-icon>
+      <v-toolbar-title class='text-uppercase font-weight-light'>{{$route.name}}</v-toolbar-title>
+      <div v-if='$route.path.includes("view")' class='mt-1'>
+        <v-btn small round flat @click.native='toggleControlsViewer'>{{$store.state.viewerControls ? "close" :"show"}} controls</v-btn>
+      </div>
+      <v-spacer></v-spacer>
+      <v-btn small flat @click.native='logout()'>
+        Logout
+      </v-btn>
+      <v-btn flat small icon @click.native='toggleDark()'>
+        <v-icon small>wb_sunny</v-icon>
+      </v-btn>
+    </v-toolbar>
+    <v-content>
+      <!-- <v-container fluid> -->
+      <keep-alive exclude='StreamDetailView'>
+        <router-view></router-view>
+      </keep-alive>
+      <!-- </v-container> -->
+    </v-content>
+  </v-app>
 </template>
 <script>
 import NavDrawer from './components/NavDrawer.vue'
@@ -28,18 +43,41 @@ export default {
     NavDrawer
   },
   data: _ => ( {
-    showSidebar: true
+    drawer: true,
+    dark: false,
+    viewerControls: true
   } ),
+  methods: {
+    toggleDark( ) {
+      this.dark = !this.dark
+      localStorage.setItem( 'dark', this.dark )
+    },
+    logout( ) {
+      this.$store.dispatch( 'logout' )
+      this.$router.push( '/login' )
+    },
+    toggleControlsViewer( ) {
+      this.$store.commit( 'TOGGLE_VIEWER_CONTROLS' )
+    }
+  },
   created( ) {
     if ( this.$store.state.isAuth ) {
       this.$store.dispatch( 'getStreams', 'omit=objects,layers&isComputedResult=false&sort=updatedAt' )
       this.$store.dispatch( 'getProjects' )
+      this.$store.dispatch( 'getProcessors' )
+      this.$store.dispatch( 'createClient' )
     }
+    if ( localStorage.getItem( 'dark' ) === 'true' ) {
+      this.dark = true
+      this.$store.commit( 'SET_DARK', true )
+    }
+
+    this.$store.dispatch( 'loadLambdas' )
   },
   updated( ) {
     let overlay = document.getElementsByClassName( "md-overlay" )[ 0 ]
     if ( !overlay ) return
-    overlay.onclick = ( function( ) {
+    overlay.onclick = ( function ( ) {
       this.showSidebar = false
     } ).bind( this )
   }
@@ -48,32 +86,6 @@ export default {
 
 </script>
 <style lang='scss'>
-$SpeckleBlue: #448aff;
-
-.credits {
-  position: absolute;
-  bottom:20px;
-  width: 100%;
-  text-align: center;
-}
-.credits a {
-  color: white !important;
-}
-.md-app-content {
-  @media only screen and (max-width: 600px) {
-    padding: 0 !important;
-  }
-}
-.text-center-small {
-  @media only screen and (max-width: 600px) {
-    text-align: center;
-  }
-}
-
-.md-drawer.md-persistent-mini {
-  transform: translate3D(0, 0px, 0) !important;
-}
-
 .super-bg {
   background: #448aff;
   /* fallback for old browsers */
@@ -83,17 +95,31 @@ $SpeckleBlue: #448aff;
   /* W3C, IE 10+/ Edge, Firefox 16+, Chrome 26+, Opera 12+, Safari 7+ */
 }
 
-
-#app {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+.other-bg {
+  background: #0052D4;
+  /* fallback for old browsers */
+  background: -webkit-linear-gradient(to right, #6FB1FC, #4364F7, #0052D4);
+  /* Chrome 10-25, Safari 5.1-6 */
+  background: linear-gradient(to right, #6FB1FC, #4364F7, #0052D4);
+  /* W3C, IE 10+/ Edge, Firefox 16+, Chrome 26+, Opera 12+, Safari 7+ */
 }
 
-.md-app {
-  height: 100%;
+.royal-bg {
+  background: #536976;
+  /* fallback for old browsers */
+  background: -webkit-linear-gradient(to right, #292E49, #536976);
+  /* Chrome 10-25, Safari 5.1-6 */
+  background: linear-gradient(to right, #292E49, #536976);
+  /* W3C, IE 10+/ Edge, Firefox 16+, Chrome 26+, Opera 12+, Safari 7+ */
+}
+
+.light-bg {
+  background: #56CCF2;
+  /* fallback for old browsers */
+  background: -webkit-linear-gradient(to right, #2F80ED, #56CCF2);
+  /* Chrome 10-25, Safari 5.1-6 */
+  background: linear-gradient(to right, #2F80ED, #56CCF2);
+  /* W3C, IE 10+/ Edge, Firefox 16+, Chrome 26+, Opera 12+, Safari 7+ */
 }
 
 .fade-enter-active,
@@ -106,54 +132,8 @@ $SpeckleBlue: #448aff;
   opacity: 0;
 }
 
-.btn-no-margin,
-.no-margin {
-  margin-left: 0 !important;
-  margin-right: 0 !important;
-}
-
-.md-card.md-with-hover {
-  cursor: default !important;
-}
-
-button {
-  /*cursor: pointer !important;*/
-}
-
-.stream-chips:after {
-  display: none !important;
-}
-
-.stream-chips:before {
-  display: none !important;
-}
-
-.text-right {
-  text-align: right;
-}
-
-.text-center {
-  text-align: center !important;
-}
-
-.bg-ghost-white {
-  background-color: ghostwhite;
-}
-
-.sticky-top {
-  position: -webkit-sticky;
-  /* Safari */
-  position: sticky;
-  top: 0;
-  width: 100%;
-  background-color: white;
-  z-index: 100;
-  /*margin-bottom: 30px;*/
-}
-
-.md-select-menu {
-  /*z-index: 10000 !important;*/
-  background-color: white !important;
+.no-scroll {
+  overflow: hidden !important;
 }
 
 </style>

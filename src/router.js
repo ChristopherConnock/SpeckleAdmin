@@ -33,19 +33,19 @@ let myRouter = new Router( {
       component: ( ) => import( './views/Stream.vue' ),
       meta: { requiresAuth: true },
       children: [ {
-        name: 'streamoverview',
+        name: 'stream overview',
         path: '',
         component: ( ) => import( './views/StreamOverview.vue' )
       }, {
-        name: 'streamdata',
+        name: 'stream data',
         path: 'data',
         component: ( ) => import( './views/StreamData.vue' )
-      },{
-        name: 'streamsharing',
+      }, {
+        name: 'stream sharing',
         path: 'sharing',
         component: ( ) => import( './views/StreamSharing.vue' )
-      } ,{
-        name: 'streamhistory',
+      }, {
+        name: 'stream history',
         path: 'history',
         component: ( ) => import( './views/StreamHistory.vue' )
       } ]
@@ -55,11 +55,18 @@ let myRouter = new Router( {
       name: 'projects',
       component: ( ) => import( './views/Projects.vue' ),
       meta: { requiresAuth: true },
-    }, {
+    },
+    {
       path: '/projects/:projectId',
-      name: 'singleproject',
+      name: 'project overview',
       component: ( ) => import( './views/Project.vue' ),
       meta: { requiresAuth: true },
+    },
+    {
+      path: '/view/:streamIds*',
+      name: 'viewer',
+      component: ( ) => import( './views/Viewer.vue' ),
+      meta: { requiresAuth: false },
     },
     {
       path: '/trash',
@@ -83,6 +90,37 @@ let myRouter = new Router( {
       path: '/feedback',
       name: 'feedback',
       component: ( ) => import( './views/Feedback.vue' ),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/admin',
+      name: '',
+      component: ( ) => import( './views/Admin.vue' ),
+      meta: { requiresAuth: true },
+      children: [ {
+        name: 'admin users',
+        path: '',
+        component: ( ) => import( './views/AdminUsers.vue' )
+      }, {
+        name: 'admin streams',
+        path: 'streams',
+        component: ( ) => import( './views/AdminStreams.vue' )
+      }, {
+        name: 'admin projects',
+        path: 'projects',
+        component: ( ) => import( './views/AdminProjects.vue' )
+      } ]
+    },
+    {
+      path: '/processors',
+      name: 'processors',
+      component: ( ) => import( './views/Processors.vue' ),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: '/processors/:processorId',
+      name: 'processor overview',
+      component: ( ) => import( './views/Processor.vue' ),
       meta: { requiresAuth: true },
     }
   ],

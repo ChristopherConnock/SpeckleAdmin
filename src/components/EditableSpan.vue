@@ -1,14 +1,5 @@
 <template>
-  <span>
-  <span
-    :title='hint'
-    :contenteditable='!disabled'
-    @blur='updateOnBlur'
-    @keydown.enter='updateOnEnter'
-    v-html='getContent()'>
-  </span>
-  <md-tooltip>{{hint}}</md-tooltip>
-  </span>
+  <span :title='hint' :contenteditable='!disabled' @blur='updateOnBlur' @keydown.enter='updateOnEnter' v-html='getContent()'></span>
 </template>
 <script>
 export default {
@@ -33,7 +24,6 @@ export default {
     },
     updateOnBlur( e ) {
       let newContent = e.target.innerText.replace( /(\r\n|\n|\r)/gm, "" )
-      console.log( newContent.length )
       if ( newContent === '' )
         return e.target.innerText = this.text
       if ( this.getContent( ) === newContent ) {

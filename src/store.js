@@ -1,11 +1,234 @@
 import Vue from 'vue'
 import Vuex from 'vuex'
 import Axios from 'axios'
+import * as Msal from 'msal'
 
 import uniq from 'lodash.uniq'
 import uuid from 'uuid/v4'
+import flatten from 'flat'
+
+import { LambdaSettings } from './lambda/_lambdaSettings.js'
 
 Vue.use( Vuex )
+
+function removeArraysRecursive( foo ) {
+  let bar = {}
+
+  for ( let key in foo ) {
+    if ( !foo.hasOwnProperty( key ) ) continue
+    else if ( Array.isArray( foo[ key ] ) ) {
+      //bar[ key + ' (array)' ] = `Array with ${ foo[key].length } elements`
+    } else if ( typeof foo[ key ] === 'object' && foo[ key ] !== null ) {
+      bar[ key ] = removeArraysRecursive( foo[ key ] )
+    } else {
+      bar[ key ] = foo[ key ]
+    }
+  }
+  return bar
+}
+
+function getStructuralArrPropKeys( foo ) {
+  let bar = {}
+
+  for ( let key in foo ) {
+    if ( !foo.hasOwnProperty( key ) ) continue
+    else if ( Array.isArray( foo[ key ] ) ) {
+      bar[ key ] = `Array with ${ foo[key].length } elements`
+    } else if ( typeof foo[ key ] === 'object' && foo[ key ] !== null ) {
+      bar[ key ] = getStructuralArrPropKeys( foo[ key ] )
+    }
+  }
+  return bar
+}
+
+
+// the admin module is a seperate store that includes all the users / streams / projects on the system
+// its ADD mutations are unique, and are called by get*Admin actions contained in this module
+// but its UPDATE and DELETE mutations are the same as those in the rootStore, so rootStore actions update 
+// or delete state for projects, streams, and the current user across both stores
+const adminStore = {
+  state: {
+    streams: [],
+    users: [],
+    projects : []
+  },
+  mutations: {
+    //streams
+    ADD_STREAMS_ADMIN( state, streams ) {
+      streams.forEach( stream => {
+        if ( state.streams.findIndex( x => x.streamId === stream.streamId ) === -1 ) {
+          // defensive code (vue 3.0 we're off to typescript baby, can't wait)
+          if ( !stream.description ) stream.description = '...'
+          if ( !stream.tags ) stream.tags = [ ]
+          state.streams.unshift( stream )
+        }
+      } )
+    },
+    UPDATE_STREAM( state, props ) {
+      let found = state.streams.find( s => s.streamId === props.streamId )
+      if ( !found ) return console.error( 'User not found; aborting update.' )
+      Object.keys( props ).forEach( key => {
+        found[ key ] = props[ key ]
+      } )
+      found.updatedAt = ( new Date( ) ).toISOString( )
+    },
+    DELETE_STREAM( state, stream ) {
+      let index = state.streams.findIndex( s => s.streamId === stream.streamId )
+      if ( index > -1 ) {
+        state.streams.splice( index, 1 )
+      } else
+        console.log( `Failed to remove stream ${stream.streamId} from store.` )
+    },
+    //users
+    ADD_USERS_ADMIN( state, users ) {
+      users.forEach( user => {
+        let found = state.users.find( u => u._id === user._id )
+        if ( !found )
+          state.users.unshift( user )
+        else found = user // update the user
+      } )
+    },
+    UPDATE_USER( state, user ) {
+      let found = null
+      found = state.users.find( u => u._id === user._id )
+      if ( !found )
+        return console.error( 'User not found; aborting update.' )
+      Object.keys( user ).forEach( key => {
+        found[ key ] = user[ key ]
+      } )
+    },
+    //projects
+    ADD_PROJECTS_ADMIN( state, projects ) {
+      projects.forEach( project => {
+        if ( state.projects.findIndex( p => p._id === project._id ) === -1 ) {
+          // potentially enforce here extra fields
+          if ( !project.tags ) project.tags = [ ]
+          if ( !project.deleted ) project.deleted = false
+          state.projects.unshift( project )
+        }
+      } )
+    },
+    UPDATE_PROJECT( state, props ) {
+      let found = state.projects.find( p => p._id === props._id )
+      if (null == found) return 
+      Object.keys( props ).forEach( key => {
+        found[ key ] = props[ key ]
+      } )
+      found.updatedAt = ( new Date( ) ).toISOString( )
+    },
+    DELETE_PROJECT( state, props ) {
+      let index = state.projects.findIndex( p => p._id === props._id )
+      if ( index > -1 ) {
+        state.projects.splice( index, 1 )
+      } else
+        console.log( `Failed to remove project ${props._id} from store.` )
+    },
+  },
+  getters: {
+  },
+  actions: {
+    //streams
+    getStreamsAdmin( context ) {
+      return new Promise( ( resolve, reject ) => {
+        Axios.get( 'streams/admin' )
+          .then( res => {
+            context.commit( 'ADD_STREAMS_ADMIN', res.data.resources )
+            return resolve( res.data.resources )
+          } )
+          .catch( err => {
+            console.log( err )
+            return reject( err )
+          } )
+      } )
+    },
+    
+    //users
+    getUsersAdmin( context ) {
+      return new Promise( ( resolve, reject ) => {
+        Axios.get( 'accounts/admin' )
+          .then( res => {
+            context.commit( 'ADD_USERS_ADMIN', res.data.resource )
+            return resolve( res.data.resources )
+          } )
+          .catch( err => {
+            console.log( err )
+            return reject( err )
+          } )
+      } )
+    },
+    updateUserAdmin (context, user) {
+      return new Promise( ( resolve, reject ) => {
+        Axios.put("accounts/" + user._id, user)
+        .then(res => {
+            return resolve(context.commit( 'UPDATE_USER', user))
+        })
+        .catch (err => {
+          return reject (err)
+        })
+      })
+
+    },
+    //projects
+    getProjectsAdmin( context ) {
+      return new Promise( ( resolve, reject ) => {
+        Axios.get( 'projects/admin' )
+          .then( res => {
+            context.commit( 'ADD_PROJECTS_ADMIN', res.data.resources )
+            return resolve( res.data.resources )
+          } )
+          .catch( err => {
+            console.log( err )
+            return reject( err )
+          } )
+      } )
+    },
+  }
+}
+
+async function getTokenMSAL ( { clientId, authority, loginRequest } ) {
+  // TODO: THIS CANNOT BE CALLED MULTIPLE TIMES!!!
+  // DEPENDS ON LOCAL STORAGE TO PROPERLY OBTAIN CLIENTID
+  var userAgent = new Msal.UserAgentApplication({
+    auth: {
+      clientId: clientId,
+      authority: authority,
+      redirectUri: window.location.origin + "/msal.html"
+    },
+    cache: {
+      cacheLocation: "localStorage",
+      storeAuthStateInCookie: true
+    },
+  })
+
+  var token = await userAgent.getCachedToken(clientId)
+
+  if (token)
+    return token.accessToken
+
+  try
+  {
+    token = await userAgent.acquireTokenSilent(loginRequest)
+  }
+  catch (e)
+  {
+    console.log('MSAL Error: ' + e.errorCode)
+    if (e.errorCode === "user_login_error")
+    {
+      window.localStorage.msalClientId = clientId
+      await userAgent.loginPopup(loginRequest)
+      delete window.localStorage.msalClientId
+      return await getTokenMSAL( {clientId: clientId, authority: authority, loginRequest: loginRequest})
+    }
+    else if (e.errorCode === "token_renewal_error")
+    {
+      window.localStorage.msalClientId = clientId
+      token = await userAgent.acquireTokenPopup(loginRequest)
+      delete window.localStorage.msalClientId
+    }
+  }
+  
+  return token.accessToken
+}
 
 export default new Vuex.Store( {
   state: {
@@ -28,7 +251,25 @@ export default new Vuex.Store( {
     comments: [ ],
     // global store for users. it's dynamically assembled as the end-user moves through
     // the admin ui, and new user profiles need to be requested.
-    users: [ ]
+    users: [ ],
+    // viewer/processor related
+    loadedStreamIds: [ ],
+    objects: [ ],
+    legend: null,
+    selectedObjects: [ ],
+    // client (used for ws requests, etc.)
+    myClient: null,
+    // app dark mode?
+    dark: false,
+    // toggles viewer controls
+    viewerControls: true,
+
+    // processor related
+    // these are the function names for each block from /src/lambda
+    // if you want to add your own lambda, add the function/file name to the list to expose it
+    lambdas: [ ],
+    processors: [ ],
+    tokens: { },
   },
   getters: {
     streamClients: ( state ) => ( streamId ) => {
@@ -39,46 +280,98 @@ export default new Vuex.Store( {
       if ( !filters || filters.length === 0 ) return base
       filters.forEach( query => {
         query.key = query.key.toLowerCase( )
-        switch ( query.key ) {
-          case 'private':
-            if ( query.value )
-              base = base.filter( stream => stream.private.toString( ) === query.value )
-            else
-              base = base.filter( stream => stream.private === true )
-            break
-          case 'public':
-            if ( query.value )
-              base = base.filter( stream => ( !stream.private ).toString( ) === query.value )
-            else
-              base = base.filter( stream => stream.private === false )
-            break
-          case 'tag':
-          case 'tags':
-            let myTags = query.value.split( ',' ).map( t => t.toLowerCase( ) )
-            base = base.filter( stream => {
-              let streamTags = stream.tags.map( t => t.toLowerCase( ) )
-              return myTags.every( t => streamTags.includes( t ) )
-            } )
-            break
-          case 'mine':
-            base = base.filter( stream => stream.owner === state.user._id )
-            break;
-          case 'shared':
-            base = base.filter( stream => stream.owner !== state.user._id )
-            break;
-          case 'name':
-            base = base.filter( stream => stream.name.toLowerCase( ).includes( query.value.toLowerCase( ) ) )
-            break
-          case 'streamid':
-          case 'id':
-            base = base.filter( stream => stream.streamId.toLowerCase( ).includes( query.value.toLowerCase( ) ) )
-            break
+        if ( query.value === null ) base = base
+        else {
+          base = base.filter( stream => stream.name !== '' )
+          switch ( query.key ) {
+            case 'private':
+              if ( query.value )
+                base = base.filter( stream => stream.private.toString( ) === query.value )
+              else
+                base = base.filter( stream => stream.private === true )
+              break
+            case 'public':
+              if ( query.value )
+                base = base.filter( stream => ( !stream.private ).toString( ) === query.value )
+              else
+                base = base.filter( stream => stream.private === false )
+              break
+            case 'tag':
+            case 'tags':
+              let myTags = query.value.split( ',' ).map( t => t.toLowerCase( ) )
+              base = base.filter( stream => {
+                let streamTags = stream.tags.map( t => t.toLowerCase( ) )
+                return myTags.every( t => streamTags.includes( t ) )
+              } )
+              break
+            case 'mine':
+              base = base.filter( stream => stream.owner === state.user._id )
+              break;
+            case 'shared':
+              base = base.filter( stream => stream.owner !== state.user._id )
+              break;
+            case 'name':
+              base = base.filter( stream => stream.name ? stream.name.toLowerCase( ).includes( query.value.toLowerCase( ) ) : true )
+              break
+            case 'streamid':
+            case 'id':
+              base = base.filter( stream => stream.streamId.toLowerCase( ).includes( query.value.toLowerCase( ) ) )
+              break
+          }
         }
       } )
       return base
+    },
+    objectPropertyKeys: ( state ) => {
+      let keySet = new Set( )
+      let stringKeySet = new Set( )
+      state.objects.forEach( obj => {
+        if ( !obj.properties ) return
+        let flatProps = flatten( removeArraysRecursive( obj.properties ) )
+        for ( let key in flatProps ) {
+          if ( key === 'hash' || key === 'id' || key.toLowerCase( ).includes( 'hash' ) || key.toLowerCase( ).includes( '_carbon' ) ) continue
+          if ( key.includes( '__' ) ) continue
+          keySet.add( key )
+          if ( typeof flatProps[ key ] === 'string' )
+            stringKeySet.add( key )
+        }
+      } )
+      let keySets = {
+        allKeys: [ ...keySet ].sort( ( a, b ) => { return a.split( '.' ).length - b.split( '.' ).length } ).sort( ( a, b ) => { return a.length - b.length } ),
+        stringKeys: [ ...stringKeySet ].sort( ( a, b ) => { return a.split( '.' ).length - b.split( '.' ).length } ).sort( ( a, b ) => { return a.length - b.length } ),
+      }
+      return keySets
+    },
+    // NOTE: this assumes results from GSA
+    hasStructuralProperties: ( state ) => {
+      for ( let obj of state.objects ) {
+        try {
+          if ( obj.properties.structural.result !== null )
+            return true
+        } catch {}
+      }
+      return false
+    },
+    // NOTE: this assumes results from GSA
+    structuralKeys: ( state ) => {
+      let keys = new Set( )
+      for ( let obj of state.objects ) {
+        try {
+          let props = flatten( getStructuralArrPropKeys( obj.properties.structural.result ) )
+          for ( let key in props )
+            keys.add( key )
+        } catch {}
+      }
+      return [ ...keys ]
     }
   },
   mutations: {
+    SET_DARK( state, dark ) {
+      state.dark = dark
+    },
+    TOGGLE_VIEWER_CONTROLS( state ) {
+      state.viewerControls = !state.viewerControls
+    },
     // Streams
     ADD_STREAMS( state, streams ) {
       streams.forEach( stream => {
@@ -92,15 +385,17 @@ export default new Vuex.Store( {
     },
     UPDATE_STREAM( state, props ) {
       let found = state.streams.find( s => s.streamId === props.streamId )
+      if ( !found ) return console.error( 'stream not found; aborting update.' )
       Object.keys( props ).forEach( key => {
         found[ key ] = props[ key ]
       } )
+      found.updatedAt = ( new Date( ) ).toISOString( )
     },
     UPDATE_STREAM_DATA( state, props ) {
       let found = state.streams.find( s => s.streamId === props.streamId )
       if ( props.layers )
         found.layers = props.layers
-
+      found.updatedAt = ( new Date( ) ).toISOString( )
       // console.log('TODO')
     },
     DELETE_STREAM( state, stream ) {
@@ -219,9 +514,11 @@ export default new Vuex.Store( {
     },
     UPDATE_PROJECT( state, props ) {
       let found = state.projects.find( p => p._id === props._id )
+      if (found == null) return console.warn('The admin user is not on this project')
       Object.keys( props ).forEach( key => {
         found[ key ] = props[ key ]
       } )
+      found.updatedAt = ( new Date( ) ).toISOString( )
     },
     DELETE_PROJECT( state, props ) {
       let index = state.projects.findIndex( p => p._id === props._id )
@@ -229,6 +526,46 @@ export default new Vuex.Store( {
         state.projects.splice( index, 1 )
       } else
         console.log( `Failed to remove project ${props._id} from store.` )
+    },
+
+    // Processors
+    ADD_LAMBDAS( state, lambdas ) {
+      lambdas.forEach( lambda => {
+        if ( state.lambdas.findIndex( p => p.function === lambda.function ) === -1 ) {
+          state.lambdas.push( lambda )
+        }
+      } )
+    },
+    ADD_PROCESSORS( state, processors ) {
+      processors.forEach( processor => {
+        if ( state.processors.findIndex( p => p._id === processor._id ) === -1 ) {
+          // potentially enforce here extra fields
+          if ( !processor.tags ) processor.tags = [ ]
+          state.processors.unshift( processor )
+        }
+      } )
+    },
+    UPDATE_PROCESSOR( state, props ) {
+      let found = state.processors.find( p => p._id == props._id )
+
+      Object.keys( props ).forEach( key => {
+        found[ key ] = props[ key ]
+      } )
+    },
+    DELETE_PROCESSOR( state, props ) {
+      let index = state.processors.findIndex( p => p._id === props._id )
+      if ( index > -1 ) {
+        state.processors.splice( index, 1 )
+      } else
+        console.log( `Failed to remove processor ${props._id} from store.` )
+    },
+    ADD_TOKEN( state, {id, token} ) {
+      Vue.set(state.tokens, id, token)
+      console.log(state.tokens)
+    },
+    DELETE_TOKEN( state, id ) {
+      Vue.delete(state.tokens, id)
+      console.log(state.tokens)
     },
 
     // Users
@@ -246,7 +583,7 @@ export default new Vuex.Store( {
         else found = user // update the user
       } )
     },
-    UPDATE_LUSER( state, user ) {
+    UPDATE_USER( state, user ) {
       let found = null
       if ( user._id === state.user._id ) found = state.user
       else
@@ -272,6 +609,10 @@ export default new Vuex.Store( {
     SET_USER( state, user ) {
       state.user = user
     },
+    SET_WEB_APP_CLIENT( state, client ) {
+      state.client = client
+    },
+
     // End of life
     FLUSH_ALL( state ) {
       state.token = null
@@ -282,7 +623,58 @@ export default new Vuex.Store( {
       state.users = [ ]
       state.comments = [ ]
       state.isAuth = false
-    }
+    },
+
+    // Viewer related
+    ADD_LOADED_STREAMID( state, streamId ) {
+      state.loadedStreamIds = [ ...new Set( [ ...state.loadedStreamIds, streamId ] ) ]
+    },
+    REMOVE_LOADED_STREAMID( state, streamId ) {
+      let index = state.loadedStreamIds.indexOf( streamId )
+      if ( index !== -1 )
+        state.loadedStreamIds.splice( index, 1 )
+      else
+        console.warn( `Failed to remove loaded streamid: ${streamId} from ${state.loadedStreamIds}` )
+    },
+    // OBJECTS
+    ADD_OBJECTS( state, objects ) {
+      state.objects.push( ...objects )
+    },
+    UPDATE_OBJECTS_STREAMS( state, { objIds, streamToAdd, streamToRemove } ) {
+      objIds.forEach( id => {
+        let myObject = state.objects.find( o => o._id === id )
+        if ( myObject ) {
+          if ( streamToAdd && myObject.streams.indexOf( streamToAdd ) === -1 )
+            myObject.streams.push( streamToAdd )
+          if ( streamToRemove ) {
+            let index = myObject.streams.indexOf( streamToRemove )
+            if ( index !== -1 ) myObject.streams.splice( index, 1 )
+          }
+        }
+      } )
+    },
+    REMOVE_OBJECTS( state, objectIds ) {
+      state.objects = state.objects.filter( obj => objectIds.indexOf( obj._id ) === -1 )
+    },
+    // Selected objects setters
+    SET_SELECTED_OBJECTS( state, { objectIds } ) {
+      if ( objectIds.length > 0 )
+        state.selectedObjects = [ ...new Set( [ ...state.selectedObjects, ...objectIds ] ) ]
+      else
+        state.selectedObjects = [ ]
+    },
+    ADD_SELECTED_OBJECTS( state, { objectIds } ) {
+      state.selectedObjects = [ ...new Set( [ ...state.selectedObjects, ...objectIds ] ) ]
+    },
+    REMOVE_SELECTED_OBJECTS( state, { objectIds } ) {
+      objectIds.forEach( id => {
+        let index = state.selectedObjects.indexOf( id )
+        if ( index !== -1 ) state.selectedObjects.splice( index, 1 )
+      } )
+    },
+    SET_LEGEND( state, legend ) {
+      state.legend = legend
+    },
   },
   actions: {
     // Streams
@@ -300,6 +692,18 @@ export default new Vuex.Store( {
           } )
       } )
     },
+
+    refreshStream( context, props ) {
+      return new Promise( ( resolve, reject ) => {
+        Axios.get( `streams/${props.streamId}?omit=objects` )
+          .then( res => {
+            context.commit( 'UPDATE_STREAM', res.data.resource )
+            return resolve( res )
+          } )
+          .catch( err => reject( err ) )
+      } )
+    },
+
     getStreams( context, query ) {
       return new Promise( ( resolve, reject ) => {
         Axios.get( `streams?${query ? query : '' }` )
@@ -322,6 +726,8 @@ export default new Vuex.Store( {
             stream.streamId = res.data.resource.streamId
             res.data.resource.onlineEditable = true
             context.commit( 'ADD_STREAMS', [ res.data.resource ] )
+            //namespacing the admin module caused other issues, so we'll call this here as well
+            context.commit( 'ADD_STREAMS_ADMIN', [ res.data.resource ] )
             return Axios.put( `streams/${res.data.resource.streamId}`, stream )
           } )
           .then( res => {
@@ -338,6 +744,7 @@ export default new Vuex.Store( {
     updateStream( context, props ) {
       Axios.put( `streams/${props.streamId}`, props )
         .then( res => {
+          // modules.admin
           context.commit( 'UPDATE_STREAM', props )
         } )
         .catch( err => {
@@ -383,6 +790,43 @@ export default new Vuex.Store( {
         } )
     },
 
+    // objects
+    getStreamObjects( context, streamId ) {
+      let found = context.state.streams.find( s => s.streamId === streamId )
+      return new Promise( ( resolve, reject ) => {
+        context.dispatch( 'getStream', { streamId: streamId } )
+          .then( ( ) => {
+            return Axios.get( `streams/${streamId}?fields=objects,layers` )
+          } )
+          .then( res => {
+            let ids = res.data.resource.objects.map( o => o._id )
+            context.commit( 'UPDATE_STREAM', { streamId: streamId, objects: ids, layers: res.data.resource.layers } )
+            resolve( ids )
+          } )
+          .catch( err => {
+            reject( err )
+          } )
+      } )
+    },
+    getObjects( context, objectIds ) {
+      return new Promise( ( resolve, reject ) => {
+        Axios.post( `objects/getbulk?omit=base64,rawData,canRead,canWrite,children,anonymousComments,name`, objectIds )
+          .then( res => {
+            // context.state.objects.push( ...res.data.resources )
+            // context.commit( 'ADD_OBJECTS', res.data.resources )
+            resolve( res.data.resources )
+          } )
+          .catch( err => reject( err ) )
+      } )
+    },
+    createObjects( context, objects ) {
+      return new Promise( (resolve, reject) => {
+        Axios.post(`objects`, objects)
+        .then( res => resolve( res.data.resources ) )
+        .catch( err => reject( err ))
+      })
+    },
+
     // projects
     getProject( context, props ) {
       return new Promise( ( resolve, reject ) => {
@@ -415,6 +859,8 @@ export default new Vuex.Store( {
         Axios.post( `projects`, project ? project : { name: 'A new speckle project' } )
           .then( res => {
             context.commit( 'ADD_PROJECTS', [ res.data.resource ] )
+            //namespacing the admin module caused other issues, so we'll call this here as well
+            context.commit( 'ADD_PROJECTS_ADMIN', [ res.data.resource ] )
             return resolve( res.data.resource )
           } )
           .catch( err => {
@@ -457,7 +903,16 @@ export default new Vuex.Store( {
       if ( !project ) return reject( new Error( 'Failed to find project in state.' ) )
       Axios.put( `projects/${projectId}/upgradeuser/${userId}` )
         .then( res => {
-          context.commit( 'UPDATE_PROJECT', { _id: projectId, permissions: { canRead: uniq( [ ...project.canRead, userId ] ), canWrite: uniq( [ ...project.canWrite, userId ] ) } } )
+          return Axios.get( `projects/${projectId}?fields=permissions` )
+        } )
+        .then( res => {
+          context.commit( 'UPDATE_PROJECT', {
+            _id: projectId,
+            permissions: {
+              canRead: res.data.resource.permissions.canRead, //[ ...new Set( [ ...project.canRead, userId ] ) ],
+              canWrite: res.data.resource.permissions.canWrite //[ ...new Set( [ ...project.canWrite, userId ] ) ]
+            }
+          } )
           project.streams.forEach( streamId => {
             let myStream = context.state.streams.find( s => s.streamId === streamId )
             context.commit( 'UPDATE_STREAM', { streamId: streamId, canWrite: uniq( [ ...myStream.canWrite, userId ] ), canRead: uniq( [ ...myStream.canRead, userId ] ) } )
@@ -560,6 +1015,181 @@ export default new Vuex.Store( {
         } )
     } ),
 
+    // processors
+    loadLambdas ( context ) {
+      return new Promise(( resolve, reject ) => {
+        let promises = []
+        let myLambdas = new LambdaSettings().Lambdas
+
+        for(let i = 0; i < myLambdas.length; i++)
+        {
+          promises.push(
+            Axios({
+              method: 'GET',
+              url: `.netlify/functions/${myLambdas[i]}`,
+              baseURL: location.protocol + '//' + location.host,
+            })
+          )
+        }
+
+        Promise.all(promises)
+          .then( res => {
+            var lambdas = []
+
+            res.forEach( r => {
+              let data = r.data
+              data.function = r.request.responseURL.split('/').slice(-1).pop()
+              lambdas.push(data)
+            })
+
+            context.commit( 'ADD_LAMBDAS', lambdas )
+            return resolve ( lambdas )
+          } )
+      }) 
+
+
+    },
+    getProcessor( context, props ) {
+      var processor = JSON.parse(window.localStorage.getItem("processor_" + props._id))
+
+      if (processor !== null)
+        context.commit( 'ADD_PROCESSORS', [ processor ] )
+
+      return processor
+    },
+    getProcessors( context ) {
+      var processorIds = JSON.parse(window.localStorage.getItem("processorIds"))
+
+      if (processorIds === null)
+        return null
+      
+      var processors = [ ]
+      processorIds.forEach( id => {
+        var processor = JSON.parse(window.localStorage.getItem("processor_" + id))
+        if (processor != null)
+          processors.unshift(processor)
+      })
+
+      context.commit( 'ADD_PROCESSORS', processors )
+
+      return processors
+    },
+    createProcessor( context, processor ) {
+      var id = uuid()
+      
+      var proc = processor ? processor : { name: 'A new speckle processor' }
+      
+      // Always assign new ID
+      proc._id = id
+
+      if (!proc.hasOwnProperty('description'))
+        proc.description = "This is a simple speckle processor."
+      
+      if (!proc.hasOwnProperty('tags'))
+        proc.tags = [ ]
+        
+      if (!proc.hasOwnProperty('blocks'))
+        proc.blocks = [ ]
+      
+      if (!proc.hasOwnProperty('params'))
+        proc.params = [ ]
+
+      // Properties added for compatibility with other components
+      // as well as for future storage in server
+      proc.owner = context.state.user._id
+      proc.private = false
+      proc.canRead = [ context.state.user._id ]
+      proc.canWrite = [ context.state.user._id ]
+
+      proc.anonymousComments = false
+      proc.comments = []
+
+      window.localStorage.setItem(
+        "processor_" + id,
+        JSON.stringify(proc)
+      )
+
+      context.commit( 'ADD_PROCESSORS', [ proc ] )
+
+      var processorIds = JSON.parse(window.localStorage.getItem("processorIds"))
+
+      if (processorIds === null)
+        processorIds = [ ]
+      
+      processorIds.unshift(id)
+
+      window.localStorage.setItem(
+        "processorIds",
+        JSON.stringify(processorIds)
+      )
+
+      return proc
+    },
+    updateProcessor( context, props ) {
+      let found = JSON.parse(window.localStorage.getItem("processor_" + props._id))
+
+      Object.keys( props ).forEach( key => {
+        found[ key ] = props[ key ]
+      } )
+      window.localStorage.setItem(
+        "processor_" + props._id,
+        JSON.stringify(found)
+      )
+
+      context.commit( 'UPDATE_PROCESSOR', props )
+    },
+    deleteProcessor( context, props ) {
+      window.localStorage.removeItem("processor_" + props._id)
+
+      context.commit( 'DELETE_PROCESSOR', props )
+
+      var processorIds = JSON.parse(window.localStorage.getItem("processorIds"))
+
+      if (processorIds !== null)
+      {
+        var foundIndex = processorIds.indexOf(props._id)
+        if (foundIndex !== -1)
+        {
+          processorIds.splice(foundIndex, 1)
+          
+          window.localStorage.setItem(
+            "processorIds",
+            JSON.stringify(processorIds)
+          )
+        }
+      }
+    },
+    async authenticateBlocks( context, blocks ) {
+      for (let i = 0; i < blocks.length; i++)
+      {
+        if(blocks[i].msal)
+        {
+          let propName = 'msal|' + blocks[i].msal.clientId
+          let token = await getTokenMSAL(blocks[i].msal)
+          context.commit( 'ADD_TOKEN', {id: propName, token: token})
+        }
+      }
+    },
+    
+    // client for ws ids, etc.
+    createClient: ( context, props ) => new Promise( ( resolve, reject ) => {
+
+      // NOTE: This is a stupid hack. To get a temp client, we need to be not auhtorised : /
+      delete Axios.defaults.headers.common[ 'Authorization' ]
+
+      Axios.post( `clients`, { role: 'online-client', documentName: 'Online interface', documentType: 'browser', online: true } )
+        .then( res => {
+          context.commit( 'SET_WEB_APP_CLIENT', res.data.resource )
+          return resolve( res.data.resource )
+        } )
+        .catch( err => {
+          console.warn( err )
+          return reject( err )
+        } )
+      // set the headers back. man what a stupid hack this is...
+      Axios.defaults.headers.common[ 'Authorization' ] = context.state.token
+    } ),
+
     // users
     getUser( context, payload ) {
       return new Promise( ( resolve, reject ) => {
@@ -578,9 +1208,10 @@ export default new Vuex.Store( {
     },
 
     updateLoggedInUser: ( context, payload ) => new Promise( ( resolve, reject ) => {
+      console.log(payload)
       Axios.put( `accounts`, payload )
         .then( res => {
-          context.commit( 'UPDATE_LUSER', payload )
+          context.commit( 'UPDATE_USER', payload )
           return resolve( res )
         } )
         .catch( err => reject( err ) )
@@ -609,4 +1240,7 @@ export default new Vuex.Store( {
       Axios.defaults.headers.common[ 'Authorization' ] = ''
     }
   },
+  modules: {
+    admin: adminStore
+  }
 } )
